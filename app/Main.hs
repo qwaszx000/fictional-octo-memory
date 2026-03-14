@@ -42,66 +42,65 @@ data GuessResult = GRWrong | GROtherPlace | GRCorrect
 -- -- restG = "aa", restA = "aa"
 -- aa -> ba -> wg
 cmpWords :: WordleWord -> WordleWord -> [GuessResult]
-cmpWords guess answer = reverse $ fst $ foldl' cmpChar ([], 0) $ BS.zip guess answer
+cmpWords guess answer = reverse $ fst $ foldl' cmpChar ([], countedCors) zippedWords
   where
-    cmpChar :: ([GuessResult], Int) -> (Char, Char) -> ([GuessResult], Int)
-    cmpChar (res, curI) (gc, ac) =
-        (,curI + 1) $
-            (: res) $
-                let
-                    (guessDone, guessRest') = BS.splitAt (fromIntegral curI) guess
-                    guessRest = BS.drop 1 guessRest'
-                    (answerDone, answerRest') = BS.splitAt (fromIntegral curI) answer
-                    answerRest = BS.drop 1 answerRest'
-                 in
-                    if
-                        | gc == ac -> GRCorrect
-                        | BS.count gc answer > BS.count gc guessRest -> GROtherPlace
-                        | otherwise -> GRWrong
+    zippedWords :: [(Char, Char)]
+    zippedWords = BS.zip guess answer
 
--- aaaaa
--- aabaa
--- ggwgg
---
--- ababa
--- aabaa
--- gyywg or gwyyg
--- count c guessRest >= count c answer -> GRWrong
---
--- ab
--- bb
--- wg
---
--- abb
--- bba
--- ygy
--- count c guessDone < count c answer -> GROtherPlace
+    countedCors :: Map.Map Char Int
+    countedCors = foldl' countCorrects Map.empty zippedWords
+
+    countCorrects :: Map.Map Char Int -> (Char, Char) -> Map.Map Char Int
+    countCorrects m (gc, ac)
+        | gc == ac = Map.insertWith (+) gc 1 m
+        | otherwise = m
+
+    cmpChar :: ([GuessResult], Map.Map Char Int) -> (Char, Char) -> ([GuessResult], Map.Map Char Int)
+    cmpChar (rs, m) (gc, ac) =
+        let
+            -- Corrects are used, plus new GROtherPlace
+            cUsed = Map.findWithDefault 0 gc m
+            cAns :: Int = fromIntegral $ BS.count gc answer
+            m' = Map.insert gc (cUsed + 1) m
+         in
+            if
+                | gc == ac -> (GRCorrect : rs, m)
+                | cAns > cUsed -> (GROtherPlace : rs, m')
+                | otherwise -> (GRWrong : rs, m)
 
 filterCtx :: ([WordleWord] -> [WordleWord]) -> GuessCtx -> GuessCtx
 filterCtx f (gs, as) = (f gs, f as)
 
 filterByResult :: WordleWord -> [GuessResult] -> (WordleWord -> Bool)
-filterByResult guess res w = snd $ foldl' foldFilter (0, True) zippedData
+filterByResult guess res w = passesChars && passesCounts
   where
     zippedData :: [(GuessResult, (Char, Char))]
     zippedData = zip res $ BS.zip guess w
 
-    foldFilter :: (Int, Bool) -> (GuessResult, (Char, Char)) -> (Int, Bool)
-    foldFilter prev@(_, False) _ = prev
-    foldFilter (n, True) (rState, (gc, wc)) = (n + 1,) $ case rState of
-        GRCorrect -> gc == wc
-        GRWrong -> gc `BS.notElem` w
-        GROtherPlace ->
-            let
-                -- We place GROtherPlace in the end of word, and first chars are GRWrong(talking about similar chars)
-                -- And so we can exploit it
-                -- Because it means that all next same chars in our guess will be GRCorrect or GROtherPlace too
-                -- We can count them and filter using these numbers
-                (_, gAfter) = BS.splitAt (fromIntegral n) guess
-                cgCount = BS.count gc gAfter
-                wCount = BS.count gc w
-             in
-                gc /= wc && wCount >= cgCount
+    -- it can be combined with passesChars if needed
+    countChars :: Map.Map Char Int -> (GuessResult, (Char, Char)) -> Map.Map Char Int
+    countChars m (GRWrong, (gc, _)) = Map.insertWith (+) gc 0 m
+    countChars m (_, (gc, _)) = Map.insertWith (+) gc 1 m
+
+    countedChars :: Map.Map Char Int
+    countedChars = foldl' countChars Map.empty zippedData
+
+    passesCounts :: Bool
+    passesCounts = Map.foldlWithKey' filterWithMap True countedChars
+      where
+        filterWithMap :: Bool -> Char -> Int -> Bool
+        filterWithMap False _ _ = False
+        filterWithMap True c n
+            | n == 0 = c `BS.notElem` w
+            | otherwise = BS.count c w >= fromIntegral n
+
+    passesChars :: Bool
+    passesChars = foldl' filterWithChars True zippedData
+      where
+        filterWithChars :: Bool -> (GuessResult, (Char, Char)) -> Bool
+        filterWithChars False _ = False
+        filterWithChars True (GRCorrect, (gc, wc)) = gc == wc
+        filterWithChars True (_, (gc, wc)) = gc /= wc
 
 -- https://wiki.haskell.org/99_questions/Solutions/26
 -- https://stackoverflow.com/questions/52602474/function-to-generate-the-unique-combinations-of-a-list-in-haskell
@@ -185,7 +184,7 @@ main = do
     let maxAttemps = 6
     let res = (\a -> tryGuessWithFirstWord maxAttemps a firstBestW ctx <&> (maxAttemps -)) <$> snd ctx
     let stat = Map.fromListWith (+) $ fmap (,1) res
-    print res
+    -- print res
     print $ Map.toDescList stat
   where
     tryGuessWithFirstWord :: Int -> WordleWord -> WordleWord -> GuessCtx -> Maybe Int
