@@ -87,11 +87,7 @@ filterByResult guess res w = filterCountedChars w && filterPerChars w
     guessS :: String
     guessS = BS.unpack guess
 
-    -- guessZip :: [(Char, GuessResult)]
-    -- guessZip = zip guessS res
-
     filterPerChars :: WordleWord -> Bool
-    -- filterPerChars w = foldl' (\b (p, c) -> b && p c) True $ zip perCharFilter $ BS.unpack w
     filterPerChars = snd . BS.foldl' applyPerCharF (0, True)
       where
         applyPerCharF :: (Int, Bool) -> Char -> (Int, Bool)
