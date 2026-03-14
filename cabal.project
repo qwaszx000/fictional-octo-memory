@@ -1,0 +1,6 @@
+
+profiling: True
+profiling-detail: all-functions
+packages: ./wordle-solver.cabal
+package *
+	profiling-detail: all-functions
