@@ -9,6 +9,7 @@ module Main where
 import qualified Data.ByteString.Lazy.Char8 as BS
 import qualified Data.Map as Map
 
+import Control.Monad (guard)
 import Data.Foldable (foldl')
 import Data.Functor ((<&>))
 import Data.List (sortOn)
@@ -158,24 +159,37 @@ nextCtx answer guess = filterCtx $ filter $ filterByResult guess guessResult
     guessResult = cmpWords guess answer
 
 selectBestNextWord :: GuessCtx -> WordleWord
-selectBestNextWord (gs, _) = head $ sortOn (Down . wordEntropy) gs
+selectBestNextWord (gs, _) = snd $ foldl' entIter (0, "") gs
   where
-    wordEntropy :: WordleWord -> Double
-    wordEntropy w = sum $ do
-        res <- possibleResults
-        let newGuessList = filter (filterByResult w res) gs
-        let gCount :: Double = fromIntegral $ length gs
-        let ngCount :: Double = fromIntegral $ length newGuessList
-        let probability = ngCount / gCount
-        let entropy = logBase 2 probability
-        pure $ probability * entropy
+    entIter :: (Double, WordleWord) -> WordleWord -> (Double, WordleWord)
+    entIter prev@(maxEnt, _) curW =
+        let
+            wEnt = wordEntropy curW gs
+         in
+            if wEnt > maxEnt
+                then (wEnt, curW)
+                else prev
+
+wordEntropy :: WordleWord -> [WordleWord] -> Double
+wordEntropy w gs = avg $ do
+    res <- possibleResults
+    let newGuessList = filter (filterByResult w res) gs
+    let ngCount :: Double = fromIntegral $ length newGuessList
+    guard $ ngCount > 0
+    let gCount :: Double = fromIntegral $ length gs
+    let probability = ngCount / gCount
+    let entropy = -logBase 2 probability
+    pure $ probability * entropy
+
+avg :: (Fractional r) => [r] -> r
+avg vals = sum vals / fromIntegral (length vals)
 
 main :: IO ()
 main = do
     ags <- getAllowedGuesses
     aas <- getAllowedAnswers
 
-    let ctx :: GuessCtx = (take 50 aas, take 50 aas) -- (ags, aas)
+    let ctx :: GuessCtx = (take 100 aas, take 100 aas) -- (ags, aas)
     let firstBestW = selectBestNextWord ctx
     print firstBestW
 
