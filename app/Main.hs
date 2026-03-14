@@ -9,6 +9,7 @@ module Main where
 import qualified Data.ByteString.Lazy.Char8 as BS
 import qualified Data.Map as Map
 
+import Control.Arrow ((&&&), (***))
 import Control.Monad (guard)
 import Data.Foldable (foldl')
 import Data.Functor ((<&>))
@@ -55,11 +56,8 @@ cmpWords guess answer = reverse $ fst $ foldl' cmpChar ([], 0) $ BS.zip guess an
                  in
                     if
                         | gc == ac -> GRCorrect
-                        -- rest of guess has enough of this char, but maybe it is GRCorrect somewhere
-                        -- So current is wrong
-                        | BS.count gc guessRest >= BS.count gc answer -> GRWrong
-                        | BS.count gc answerDone < BS.count gc guessRest -> GRWrong
-                        | otherwise -> GROtherPlace
+                        | BS.count gc answer > BS.count gc guessRest -> GROtherPlace
+                        | otherwise -> GRWrong
 
 -- aaaaa
 -- aabaa
@@ -83,41 +81,27 @@ filterCtx :: ([WordleWord] -> [WordleWord]) -> GuessCtx -> GuessCtx
 filterCtx f (gs, as) = (f gs, f as)
 
 filterByResult :: WordleWord -> [GuessResult] -> (WordleWord -> Bool)
-filterByResult guess res w = filterCountedChars w && filterPerChars w
+filterByResult guess res w = snd $ foldl' foldFilter (0, True) zippedData
   where
-    guessS :: String
-    guessS = BS.unpack guess
+    zippedData :: [(GuessResult, (Char, Char))]
+    zippedData = zip res $ BS.zip guess w
 
-    filterPerChars :: WordleWord -> Bool
-    filterPerChars = snd . BS.foldl' applyPerCharF (0, True)
-      where
-        applyPerCharF :: (Int, Bool) -> Char -> (Int, Bool)
-        applyPerCharF acc@(_, False) _ = acc
-        applyPerCharF (n, True) c = (n + 1,) $ (perCharFilter !! n) c
-
-    perCharFilter :: [Char -> Bool]
-    perCharFilter = zipWith buildCharFilter guessS res
-
-    buildCharFilter :: Char -> GuessResult -> (Char -> Bool)
-    buildCharFilter c GRCorrect = (== c)
-    buildCharFilter c _ = (/= c)
-
-    countCharsRequired :: Map.Map Char Int
-    countCharsRequired = Map.fromListWith (+) filteredChars
-      where
-        filteredChars :: [(Char, Int)]
-        filteredChars = mapMaybe transformChars $ zip guessS res
-
-        transformChars :: (Char, GuessResult) -> Maybe (Char, Int)
-        transformChars (c, GROtherPlace) = Just (c, 1)
-        transformChars _ = Nothing
-
-    filterCountedChars :: WordleWord -> Bool
-    filterCountedChars w = Map.foldlWithKey' filterFold True countCharsRequired
-      where
-        filterFold :: Bool -> Char -> Int -> Bool
-        filterFold False _ _ = False
-        filterFold True c minCs = BS.count c w >= fromIntegral minCs
+    foldFilter :: (Int, Bool) -> (GuessResult, (Char, Char)) -> (Int, Bool)
+    foldFilter prev@(_, False) _ = prev
+    foldFilter (n, True) (rState, (gc, wc)) = (n + 1,) $ case rState of
+        GRCorrect -> gc == wc
+        GRWrong -> gc `BS.notElem` w
+        GROtherPlace ->
+            let
+                -- We place GROtherPlace in the end of word, and first chars are GRWrong(talking about similar chars)
+                -- And so we can exploit it
+                -- Because it means that all next same chars in our guess will be GRCorrect or GROtherPlace too
+                -- We can count them and filter using these numbers
+                (_, gAfter) = BS.splitAt (fromIntegral n) guess
+                cgCount = BS.count gc gAfter
+                wCount = BS.count gc w
+             in
+                gc /= wc && wCount >= cgCount
 
 -- https://wiki.haskell.org/99_questions/Solutions/26
 -- https://stackoverflow.com/questions/52602474/function-to-generate-the-unique-combinations-of-a-list-in-haskell
@@ -184,13 +168,18 @@ wordEntropy w gs = avg $ do
 avg :: (Fractional r) => [r] -> r
 avg vals = sum vals / fromIntegral (length vals)
 
-main :: IO ()
-main = do
+initProg :: IO (WordleWord, GuessCtx)
+initProg = do
     ags <- getAllowedGuesses
     aas <- getAllowedAnswers
 
-    let ctx :: GuessCtx = (take 100 aas, take 100 aas) -- (ags, aas)
+    let ctx :: GuessCtx = (take 200 aas, take 200 aas) -- (ags, aas)
     let firstBestW = selectBestNextWord ctx
+    pure (firstBestW, ctx)
+
+main :: IO ()
+main = do
+    (firstBestW, ctx) <- initProg
     print firstBestW
 
     let maxAttemps = 6
@@ -201,3 +190,26 @@ main = do
   where
     tryGuessWithFirstWord :: Int -> WordleWord -> WordleWord -> GuessCtx -> Maybe Int
     tryGuessWithFirstWord n answer firstW ctx = tryGuessAnswer (n - 1) answer $ nextCtx answer firstW ctx
+
+-- ghci> iterateWord $ BS.pack "actor"
+iterateWord :: WordleWord -> IO ()
+iterateWord w = do
+    (firstBestW, ctx) <- initProg
+    print firstBestW
+
+    putStrLn $ "Expecting answer: " <> show w
+    putStrLn $ "Initial ctx: " <> show ((length *** length) ctx)
+    let ctx' = nextCtx w firstBestW ctx
+    nextIter w ctx'
+  where
+    nextIter :: WordleWord -> GuessCtx -> IO ()
+    nextIter answer ctx = do
+        putStrLn $ "Step ctx: " <> show ((length *** length) ctx)
+        let nextW = selectBestNextWord ctx
+        putStrLn $ "Using word: " <> show nextW
+        putStrLn $ "Word result: " <> show (cmpWords nextW answer)
+        let ctx' = nextCtx w nextW ctx
+        case ctx' of
+            (_, []) -> error "No answer in the end"
+            (_, [lastAns]) -> print lastAns
+            _ -> nextIter answer ctx'
