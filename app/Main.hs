@@ -13,9 +13,6 @@ import Control.Arrow ((***))
 import Control.Monad (guard)
 import Data.Foldable (foldl')
 import Data.Functor ((<&>))
-import Data.List (sortOn)
-import Data.Maybe (mapMaybe)
-import Data.Ord (Down (..))
 
 type WordleWord = BS.ByteString
 
@@ -56,7 +53,7 @@ cmpWords guess answer = reverse $ fst $ foldl' cmpChar ([], countedCors) zippedW
         let
             -- Corrects are used, plus new GROtherPlace
             cUsed = Map.findWithDefault 0 gc m
-            cAns :: Int = fromIntegral $ BS.count gc answer
+            cAns = BS.count gc answer
             m' = Map.insert gc (cUsed + 1) m
          in
             if
@@ -90,7 +87,7 @@ filterByResult guess res w = passesChars && passesCounts
         filterWithMap False _ _ = False
         filterWithMap True c n
             | n == 0 = c `BS.notElem` w
-            | otherwise = BS.count c w >= fromIntegral n
+            | otherwise = BS.count c w >= n
 
     passesChars :: Bool
     passesChars = {-# SCC "passesChars" #-} foldl' filterWithChars True zippedEq
@@ -157,7 +154,10 @@ selectBestNextWord (gs, _) = snd $ foldl' entIter (0, "") gs
 
 wordEntropy :: WordleWord -> [WordleWord] -> Double
 wordEntropy w gs = sum $ do
-    -- should be avg
+    -- should be avg instead of sum
+    -- but sum results in a lot faster execution
+    -- and results seem to be ok(even though using sum is wrong)
+    -- not sure why such a speed diff
     res <- possibleResults
     let newGuessList = filter (filterByResult w res) gs
     let ngCount :: Double = fromIntegral $ length newGuessList
@@ -172,7 +172,7 @@ avg vals = sum vals / fromIntegral (length vals)
 
 initProg :: IO (WordleWord, GuessCtx)
 initProg = do
-    ags <- getAllowedGuesses
+    -- ags <- getAllowedGuesses
     aas <- getAllowedAnswers
 
     let ctx :: GuessCtx = (take 100 aas, take 100 aas) -- (ags, aas)
