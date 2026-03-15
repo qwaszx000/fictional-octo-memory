@@ -1,4 +1,3 @@
-
 profiling: True
 profiling-detail: none
 packages: ./wordle-solver.cabal
