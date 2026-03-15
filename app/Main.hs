@@ -71,21 +71,20 @@ filterByResult :: WordleWord -> [GuessResult] -> (WordleWord -> Bool)
 filterByResult guess res w = passesChars && passesCounts
   where
     zippedGuess :: [(GuessResult, Word8)]
-    zippedGuess = zip res (BS.unpack guess)
+    zippedGuess = {-# SCC "zippedGuess" #-} zip res (BS.unpack guess)
 
     eqZip :: [Bool]
     eqZip = {-# SCC "eqZip" #-} BS.zipWith (==) guess w
 
-    -- it can be combined with passesChars if needed
     countChars :: Map.Map Word8 Int -> (GuessResult, Word8) -> Map.Map Word8 Int
-    countChars m (GRWrong, gc) = Map.insertWith (+) gc 0 m
-    countChars m (_, gc) = Map.insertWith (+) gc 1 m
+    countChars m (GRWrong, gc) = {-# SCC "countChars1" #-} Map.insertWith (+) gc 0 m
+    countChars m (_, gc) = {-# SCC "countChars2" #-} Map.insertWith (+) gc 1 m
 
     countedChars :: Map.Map Word8 Int
-    countedChars = foldl' countChars Map.empty zippedGuess
+    countedChars = {-# SCC "countedChars" #-} foldl' countChars Map.empty zippedGuess
 
     passesCounts :: Bool
-    passesCounts = Map.foldlWithKey' filterWithMap True countedChars
+    passesCounts = {-# SCC "passesCounts" #-} Map.foldlWithKey' filterWithMap True countedChars
       where
         filterWithMap :: Bool -> Word8 -> Int -> Bool
         filterWithMap False _ _ = False
@@ -94,8 +93,11 @@ filterByResult guess res w = passesChars && passesCounts
             | otherwise = BS.count c w >= fromIntegral n
 
     passesChars :: Bool
-    passesChars = {-# SCC "passesChars" #-} foldl' filterWithChars True $ zip res eqZip
+    passesChars = {-# SCC "passesChars" #-} foldl' filterWithChars True zippedEq
       where
+        zippedEq :: [(GuessResult, Bool)]
+        zippedEq = {-# SCC "zippedEq" #-} zip res eqZip
+
         filterWithChars :: Bool -> (GuessResult, Bool) -> Bool
         filterWithChars False _ = False
         filterWithChars True (GRCorrect, isEq) = isEq
@@ -118,6 +120,7 @@ possibleResults = combinations 5 [GRCorrect, GROtherPlace, GRWrong]
 tryGuessAnswer :: Int -> WordleWord -> GuessCtx -> Maybe Int
 tryGuessAnswer _ ans (_, []) = error $ "Allowed answers are empty for expected answer " <> show ans
 tryGuessAnswer 0 _ _ = Nothing
+-- tryGuessAnswer 1 _ (_, _ : _ : _) = Nothing
 tryGuessAnswer leftGuesses expectedAnswer (_, [lastGuess])
     | lastGuess == expectedAnswer = Just $ leftGuesses - 1
     | otherwise =
@@ -153,7 +156,8 @@ selectBestNextWord (gs, _) = snd $ foldl' entIter (0, "") gs
                 else prev
 
 wordEntropy :: WordleWord -> [WordleWord] -> Double
-wordEntropy w gs = avg $ do
+wordEntropy w gs = sum $ do
+    -- should be avg
     res <- possibleResults
     let newGuessList = filter (filterByResult w res) gs
     let ngCount :: Double = fromIntegral $ length newGuessList
@@ -171,7 +175,7 @@ initProg = do
     ags <- getAllowedGuesses
     aas <- getAllowedAnswers
 
-    let ctx :: GuessCtx = (take 50 aas, take 50 aas) -- (ags, aas)
+    let ctx :: GuessCtx = (take 100 aas, take 100 aas) -- (ags, aas)
     let firstBestW = selectBestNextWord ctx
     -- let firstBestW = "queue" -- for full aas
     pure (firstBestW, ctx)
