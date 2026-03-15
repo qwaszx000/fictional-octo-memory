@@ -70,19 +70,19 @@ filterCtx f (gs, as) = (f gs, f as)
 filterByResult :: WordleWord -> [GuessResult] -> (WordleWord -> Bool)
 filterByResult guess res w = passesChars && passesCounts
   where
-    bsZip :: [(Word8, Word8)]
-    bsZip = {-# SCC "bsZip" #-} BS.zip guess w
+    zippedGuess :: [(GuessResult, Word8)]
+    zippedGuess = zip res (BS.unpack guess)
 
-    zippedData :: [(GuessResult, (Word8, Word8))]
-    zippedData = {-# SCC "zippedData1" #-} zip res bsZip
+    eqZip :: [Bool]
+    eqZip = {-# SCC "eqZip" #-} BS.zipWith (==) guess w
 
     -- it can be combined with passesChars if needed
-    countChars :: Map.Map Word8 Int -> (GuessResult, (Word8, Word8)) -> Map.Map Word8 Int
-    countChars m (GRWrong, (gc, _)) = Map.insertWith (+) gc 0 m
-    countChars m (_, (gc, _)) = Map.insertWith (+) gc 1 m
+    countChars :: Map.Map Word8 Int -> (GuessResult, Word8) -> Map.Map Word8 Int
+    countChars m (GRWrong, gc) = Map.insertWith (+) gc 0 m
+    countChars m (_, gc) = Map.insertWith (+) gc 1 m
 
     countedChars :: Map.Map Word8 Int
-    countedChars = foldl' countChars Map.empty zippedData
+    countedChars = foldl' countChars Map.empty zippedGuess
 
     passesCounts :: Bool
     passesCounts = Map.foldlWithKey' filterWithMap True countedChars
@@ -94,12 +94,12 @@ filterByResult guess res w = passesChars && passesCounts
             | otherwise = BS.count c w >= fromIntegral n
 
     passesChars :: Bool
-    passesChars = foldl' filterWithChars True zippedData
+    passesChars = {-# SCC "passesChars" #-} foldl' filterWithChars True $ zip res eqZip
       where
-        filterWithChars :: Bool -> (GuessResult, (Word8, Word8)) -> Bool
+        filterWithChars :: Bool -> (GuessResult, Bool) -> Bool
         filterWithChars False _ = False
-        filterWithChars True (GRCorrect, (gc, wc)) = gc == wc
-        filterWithChars True (_, (gc, wc)) = gc /= wc
+        filterWithChars True (GRCorrect, isEq) = isEq
+        filterWithChars True (_, isEq) = not isEq
 
 -- https://wiki.haskell.org/99_questions/Solutions/26
 -- https://stackoverflow.com/questions/52602474/function-to-generate-the-unique-combinations-of-a-list-in-haskell
