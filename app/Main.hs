@@ -5,11 +5,11 @@
 
 module Main where
 
--- import qualified Data.ByteString.Lazy as BS
-import qualified Data.ByteString.Lazy.Char8 as BS
-import qualified Data.Map as Map
+import qualified Data.ByteString as BS
+import qualified Data.Map.Strict as Map
+import Data.Word (Word8)
 
-import Control.Arrow ((&&&), (***))
+import Control.Arrow ((***))
 import Control.Monad (guard)
 import Data.Foldable (foldl')
 import Data.Functor ((<&>))
@@ -20,13 +20,13 @@ import Data.Ord (Down (..))
 type WordleWord = BS.ByteString
 
 getAllowedGuesses :: IO [WordleWord]
-getAllowedGuesses = BS.readFile allowedGuessesFN <&> BS.lines
+getAllowedGuesses = BS.readFile allowedGuessesFN <&> BS.split (fromIntegral $ fromEnum '\n')
   where
     allowedGuessesFN :: FilePath
     allowedGuessesFN = "./allowed_guesses.csv"
 
 getAllowedAnswers :: IO [WordleWord]
-getAllowedAnswers = BS.readFile allowedAnswersFN <&> BS.lines
+getAllowedAnswers = BS.readFile allowedAnswersFN <&> BS.split (fromIntegral $ fromEnum '\n')
   where
     allowedAnswersFN :: FilePath
     allowedAnswersFN = "./allowed_answers.csv"
@@ -37,25 +37,21 @@ data GuessResult = GRWrong | GROtherPlace | GRCorrect
     deriving (Show, Eq)
 
 -- Greens get priority
--- aaaaa -> aabaa -> ggwgg, not ggygw
--- -- tmpS = "aa", gc = 'a', ac = 'b'
--- -- restG = "aa", restA = "aa"
--- aa -> ba -> wg
 cmpWords :: WordleWord -> WordleWord -> [GuessResult]
 cmpWords guess answer = reverse $ fst $ foldl' cmpChar ([], countedCors) zippedWords
   where
-    zippedWords :: [(Char, Char)]
+    zippedWords :: [(Word8, Word8)]
     zippedWords = BS.zip guess answer
 
-    countedCors :: Map.Map Char Int
+    countedCors :: Map.Map Word8 Int
     countedCors = foldl' countCorrects Map.empty zippedWords
 
-    countCorrects :: Map.Map Char Int -> (Char, Char) -> Map.Map Char Int
+    countCorrects :: Map.Map Word8 Int -> (Word8, Word8) -> Map.Map Word8 Int
     countCorrects m (gc, ac)
         | gc == ac = Map.insertWith (+) gc 1 m
         | otherwise = m
 
-    cmpChar :: ([GuessResult], Map.Map Char Int) -> (Char, Char) -> ([GuessResult], Map.Map Char Int)
+    cmpChar :: ([GuessResult], Map.Map Word8 Int) -> (Word8, Word8) -> ([GuessResult], Map.Map Word8 Int)
     cmpChar (rs, m) (gc, ac) =
         let
             -- Corrects are used, plus new GROtherPlace
@@ -74,21 +70,24 @@ filterCtx f (gs, as) = (f gs, f as)
 filterByResult :: WordleWord -> [GuessResult] -> (WordleWord -> Bool)
 filterByResult guess res w = passesChars && passesCounts
   where
-    zippedData :: [(GuessResult, (Char, Char))]
-    zippedData = zip res $ BS.zip guess w
+    bsZip :: [(Word8, Word8)]
+    bsZip = {-# SCC "bsZip" #-} BS.zip guess w
+
+    zippedData :: [(GuessResult, (Word8, Word8))]
+    zippedData = {-# SCC "zippedData1" #-} zip res bsZip
 
     -- it can be combined with passesChars if needed
-    countChars :: Map.Map Char Int -> (GuessResult, (Char, Char)) -> Map.Map Char Int
+    countChars :: Map.Map Word8 Int -> (GuessResult, (Word8, Word8)) -> Map.Map Word8 Int
     countChars m (GRWrong, (gc, _)) = Map.insertWith (+) gc 0 m
     countChars m (_, (gc, _)) = Map.insertWith (+) gc 1 m
 
-    countedChars :: Map.Map Char Int
+    countedChars :: Map.Map Word8 Int
     countedChars = foldl' countChars Map.empty zippedData
 
     passesCounts :: Bool
     passesCounts = Map.foldlWithKey' filterWithMap True countedChars
       where
-        filterWithMap :: Bool -> Char -> Int -> Bool
+        filterWithMap :: Bool -> Word8 -> Int -> Bool
         filterWithMap False _ _ = False
         filterWithMap True c n
             | n == 0 = c `BS.notElem` w
@@ -97,7 +96,7 @@ filterByResult guess res w = passesChars && passesCounts
     passesChars :: Bool
     passesChars = foldl' filterWithChars True zippedData
       where
-        filterWithChars :: Bool -> (GuessResult, (Char, Char)) -> Bool
+        filterWithChars :: Bool -> (GuessResult, (Word8, Word8)) -> Bool
         filterWithChars False _ = False
         filterWithChars True (GRCorrect, (gc, wc)) = gc == wc
         filterWithChars True (_, (gc, wc)) = gc /= wc
@@ -172,8 +171,9 @@ initProg = do
     ags <- getAllowedGuesses
     aas <- getAllowedAnswers
 
-    let ctx :: GuessCtx = (take 200 aas, take 200 aas) -- (ags, aas)
+    let ctx :: GuessCtx = (take 50 aas, take 50 aas) -- (ags, aas)
     let firstBestW = selectBestNextWord ctx
+    -- let firstBestW = "queue" -- for full aas
     pure (firstBestW, ctx)
 
 main :: IO ()

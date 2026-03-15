@@ -1,6 +1,4 @@
 
 profiling: True
-profiling-detail: all-functions
+profiling-detail: late
 packages: ./wordle-solver.cabal
-package *
-	profiling-detail: all-functions
