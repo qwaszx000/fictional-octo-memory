@@ -62,7 +62,8 @@ cmpWords guess answer = reverse $ fst $ foldl' cmpChar ([], countedCors) zippedW
                 | otherwise -> (GRWrong : rs, m)
 
 filterCtx :: ([WordleWord] -> [WordleWord]) -> GuessCtx -> GuessCtx
-filterCtx f (gs, as) = (f gs, f as)
+filterCtx f (gs, as) = (f gs, f as) -- "hard" mode, but it prunes serach space
+-- filterCtx f (gs, as) = (gs, f as) -- intended mode, but it's too slow
 
 filterByResult :: WordleWord -> [GuessResult] -> (WordleWord -> Bool)
 filterByResult guess res w = passesChars && passesCounts
@@ -141,29 +142,29 @@ nextCtx answer guess = filterCtx $ filter $ filterByResult guess guessResult
     guessResult = cmpWords guess answer
 
 selectBestNextWord :: GuessCtx -> WordleWord
-selectBestNextWord (gs, _) = snd $ foldl' entIter (0, "") gs
+selectBestNextWord (gs, as) = snd $ foldl' entIter (0, "") gs
   where
     entIter :: (Double, WordleWord) -> WordleWord -> (Double, WordleWord)
     entIter prev@(maxEnt, _) curW =
         let
-            wEnt = wordEntropy curW gs
+            wEnt = wordEntropy curW as
          in
             if wEnt > maxEnt
                 then (wEnt, curW)
                 else prev
 
 wordEntropy :: WordleWord -> [WordleWord] -> Double
-wordEntropy w gs = sum $ do
+wordEntropy w as = sum $ do
     -- should be avg instead of sum
     -- but sum results in a lot faster execution
     -- and results seem to be ok(even though using sum is wrong)
     -- not sure why such a speed diff
     res <- possibleResults
-    let newGuessList = filter (filterByResult w res) gs
-    let ngCount :: Double = fromIntegral $ length newGuessList
+    let newAnswersList = filter (filterByResult w res) as
+    let ngCount :: Double = fromIntegral $ length newAnswersList
     guard $ ngCount > 0
-    let gCount :: Double = fromIntegral $ length gs
-    let probability = ngCount / gCount
+    let aCount :: Double = fromIntegral $ length as
+    let probability = ngCount / aCount
     let entropy = -logBase 2 probability
     pure $ probability * entropy
 

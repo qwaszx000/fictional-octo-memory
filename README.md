@@ -12,8 +12,8 @@ https://www.poirrier.ca/notes/wordle-fixed/
 ```
 
 Dicts are from https://github.com/seanpatlan/wordle-words  
-They are stale, most probly  
-But thet's ok by me
+They are stale, most probably  
+But that's ok by me
 
 Use `cabal run wordle-solver -O2 -- +RTS -sstderr -pj` to run and save profiling data to `./wordle-solver.prof`  
 Or `cabal build wordle-solver -O2 && time cabal run wordle-solver -O2` to measure without profiling obstructions
