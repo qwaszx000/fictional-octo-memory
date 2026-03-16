@@ -33,7 +33,7 @@ getAllowedAnswers = BS.readFile allowedAnswersFN <&> BS.split (fromIntegral $ fr
 -- Allowed guesses, allowed answers
 type GuessCtx = ([WordleWord], [WordleWord])
 data GuessResult = GRWrong | GROtherPlace | GRCorrect
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)
 
 -- Greens get priority
 cmpWords :: WordleWord -> WordleWord -> [GuessResult]
@@ -120,25 +120,24 @@ nextCtx answer guess = filterCtx $ filter $ filterByResult guess guessResult
     guessResult = cmpWords guess answer
 
 maximumOn :: (Ord b) => (a -> b) -> [a] -> a
-maximumOn f as = snd $ maximumBy (comparing fst) $ fmap (f &&& id) as
+maximumOn f as = snd $ maximumBy (comparing fst) $ map (f &&& id) as
 
 selectBestNextWord :: GuessCtx -> WordleWord
 selectBestNextWord (gs, as) = maximumOn (flip wordEntropy as) gs
 
 wordEntropy :: WordleWord -> [WordleWord] -> Double
 wordEntropy w as = sum $ do
-    -- should be avg instead of sum
-    -- but sum results in a lot faster execution
-    -- and results seem to be ok(even though using sum is wrong)
-    -- not sure why such a speed diff
-    res <- possibleResults
-    let newAnswersList = filter (filterByResult w res) as
-    let ngCount :: Double = fromIntegral $ length newAnswersList
-    guard $ ngCount > 0
-    let aCount :: Double = fromIntegral $ length as
+    -- sum - faster, but results are worse
+    -- avg is slower, but results are better
+    (_, ngCount) <-
+        Map.toList $
+            Map.fromListWith (+) $
+                [(cmpWords w a, 1) | a <- as]
     let probability = ngCount / aCount
-    let entropy = -logBase 2 probability
-    pure $ probability * entropy
+    pure $ probability * (-log probability)
+  where
+    aCount :: Double
+    aCount = fromIntegral $ length as
 
 avg :: (Fractional r) => [r] -> r
 avg vals = sum vals / fromIntegral (length vals)
@@ -161,7 +160,6 @@ main = do
     let maxAttemps = 6
     let res = (\a -> tryGuessWithFirstWord maxAttemps a firstBestW ctx <&> (maxAttemps -)) <$> snd ctx
     let stat = Map.fromListWith (+) $ fmap (,1) res
-    -- print res
     print $ Map.toDescList stat
   where
     tryGuessWithFirstWord :: Int -> WordleWord -> WordleWord -> GuessCtx -> Maybe Int
