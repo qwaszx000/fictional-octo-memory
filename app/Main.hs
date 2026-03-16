@@ -1,3 +1,4 @@
+{-# LANGUAGE BinaryLiterals #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -6,6 +7,7 @@
 module Main where
 
 import qualified Data.ByteString as BS
+import qualified Data.IntMap.Strict as IMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Vector.Unboxed.Mutable as MV
 import Data.Word (Word8)
@@ -13,9 +15,11 @@ import Data.Word (Word8)
 import Control.Arrow ((&&&), (***))
 import Control.Monad (replicateM, zipWithM_)
 import Control.Monad.ST (ST, runST)
-import Data.Foldable (foldlM, maximumBy, sequenceA_)
+import Data.Foldable (foldl', foldlM, maximumBy, sequenceA_)
 import Data.Functor ((<&>))
 import Data.Ord (comparing)
+
+import Data.Bits (unsafeShiftL, unsafeShiftR, (.|.))
 
 type WordleWord = BS.ByteString
 type WIntMap = Map.Map Word8 Int
@@ -35,7 +39,17 @@ getAllowedAnswers = BS.readFile allowedAnswersFN <&> BS.split (fromIntegral $ fr
 -- Allowed guesses, allowed answers
 type GuessCtx = ([WordleWord], [WordleWord])
 data GuessResult = GRWrong | GROtherPlace | GRCorrect
-    deriving (Show, Eq, Ord)
+    deriving (Show, Eq)
+
+-- We assume that our list of GuessResults can be placed in Int
+-- So int must be able to contain at least 2*n bits
+unsafeGRs2Int :: [GuessResult] -> Int
+unsafeGRs2Int = flip unsafeShiftR 2 . foldl' (\acc gr -> flip unsafeShiftL 2 $ acc .|. encodeGR gr) 0
+  where
+    encodeGR :: GuessResult -> Int
+    encodeGR GRWrong = 0b11
+    encodeGR GROtherPlace = 0b10
+    encodeGR GRCorrect = 0b01
 
 -- Greens get priority
 cmpWords :: WordleWord -> WordleWord -> [GuessResult]
@@ -151,9 +165,9 @@ wordEntropy w as = sum $ do
     -- sum - faster, but results are worse
     -- avg is slower, but results are better
     (_, ngCount) <-
-        Map.toList $
-            Map.fromListWith (+) $
-                [(cmpWords w a, 1) | a <- as]
+        IMap.toList $
+            IMap.fromListWith (+) $
+                [(unsafeGRs2Int $ cmpWords w a, 1) | a <- as]
     let probability = ngCount / aCount
     pure $ probability * (-log probability)
   where
