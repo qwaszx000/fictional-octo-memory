@@ -7,11 +7,13 @@ module Main where
 
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
+import qualified Data.Vector.Unboxed.Mutable as MV
 import Data.Word (Word8)
 
 import Control.Arrow ((&&&), (***))
-import Control.Monad (guard, replicateM)
-import Data.Foldable (foldl', maximumBy)
+import Control.Monad (replicateM, zipWithM_)
+import Control.Monad.ST (ST, runST)
+import Data.Foldable (foldlM, maximumBy, sequenceA_)
 import Data.Functor ((<&>))
 import Data.Ord (comparing)
 
@@ -37,50 +39,69 @@ data GuessResult = GRWrong | GROtherPlace | GRCorrect
 
 -- Greens get priority
 cmpWords :: WordleWord -> WordleWord -> [GuessResult]
-cmpWords guess answer = reverse $ fst $ foldl' fiter ([], mismatches) $ BS.zip guess answer
+cmpWords guess answer = reverse $ runST $ do
+    vec <- mismatchesV
+    foldlM (fiter vec) [] $ BS.zip guess answer
   where
-    fiter :: ([GuessResult], WIntMap) -> (Word8, Word8) -> ([GuessResult], WIntMap)
-    fiter (grs, m) (gc, ac)
-        | gc == ac = (GRCorrect : grs, m)
-        | otherwise = case Map.findWithDefault 0 gc m of
-            0 -> (GRWrong : grs, m)
-            n -> (GROtherPlace : grs, Map.insert gc (n - 1) m)
+    fiter :: MV.MVector s Int -> [GuessResult] -> (Word8, Word8) -> ST s [GuessResult]
+    fiter vec grs (gc, ac) = do
+        if gc == ac
+            then pure $ GRCorrect : grs
+            else do
+                let ind = char2Index gc
+                val <- MV.unsafeRead vec ind
+                case val of
+                    0 -> pure $ GRWrong : grs
+                    n -> MV.unsafeWrite vec ind (n - 1) >> pure (GROtherPlace : grs)
 
-    mismatches :: WIntMap
-    mismatches =
-        Map.fromListWith (+) $
-            BS.zipWith
-                (\cg ca -> (ca, if cg == ca then 0 else 1))
-                guess
-                answer
+    mismatchesV :: ST s (MV.MVector s Int)
+    mismatchesV = do
+        vec <- MV.replicate 26 0
+        sequenceA_ $ BS.zipWith (\cg ca -> if cg == ca then pure () else MV.unsafeModify vec (+ 1) $ char2Index ca) guess answer
+        pure vec
 
 filterCtx :: ([WordleWord] -> [WordleWord]) -> GuessCtx -> GuessCtx
 filterCtx f (gs, as) = (f gs, f as) -- "hard" mode, but it prunes serach space
 -- filterCtx f (gs, as) = (gs, f as) -- intended mode, but it's too slow
 
+char2Index :: Word8 -> Int
+char2Index c = fromIntegral c - fromEnum 'a'
+
+index2Char :: Int -> Word8
+index2Char i = fromIntegral $ fromEnum 'a' + i
+
 filterByResult :: WordleWord -> [GuessResult] -> (WordleWord -> Bool)
-filterByResult guess res w = passesChars && passesCounts
+filterByResult guess res w = passesCounts && passesChars
   where
-    countedChars :: WIntMap
-    countedChars =
-        {-# SCC "countedChars" #-}
-        Map.fromListWith (+) $
-            zipWith
-                (\c gr -> (c, if gr == GRWrong then 0 else 1))
-                (BS.unpack guess)
-                res
+    countedChars :: ST s (MV.MVector s Int)
+    countedChars = do
+        vec <- MV.replicate 26 (-1 :: Int)
+        zipWithM_
+            ( \c gr ->
+                if gr == GRWrong
+                    then MV.unsafeModify vec (\val -> if val < 0 then 0 else val) $ char2Index c
+                    else MV.unsafeModify vec (\val -> if val < 0 then 1 else val + 1) $ char2Index c
+            )
+            (BS.unpack guess)
+            res
+        pure vec
 
     passesCounts :: Bool
-    passesCounts =
-        {-# SCC "passesCounts" #-}
-        and $
-            Map.mapWithKey
-                (\c n -> if n == 0 then c `BS.notElem` w else BS.count c w >= n)
-                countedChars
+    passesCounts = runST $ do
+        vec <- countedChars
+        MV.ifoldl'
+            ( \acc i v ->
+                acc
+                    && if
+                        | v < 0 -> True
+                        | v == 0 -> index2Char i `BS.notElem` w
+                        | otherwise -> BS.count (index2Char i) w >= v
+            )
+            True
+            vec
 
     passesChars :: Bool
     passesChars =
-        {-# SCC "passesChars" #-}
         and $
             zipWith
                 (\gr eq -> (gr == GRCorrect) == eq)
@@ -139,7 +160,7 @@ wordEntropy w as = sum $ do
     aCount :: Double
     aCount = fromIntegral $ length as
 
-avg :: (Fractional r) => [r] -> r
+avg :: (Fractional r, Foldable f) => f r -> r
 avg vals = sum vals / fromIntegral (length vals)
 
 initProg :: IO (WordleWord, GuessCtx)
@@ -147,7 +168,7 @@ initProg = do
     -- ags <- getAllowedGuesses
     aas <- getAllowedAnswers
 
-    let ctx :: GuessCtx = (take 200 aas, take 200 aas) -- (ags, aas)
+    let ctx :: GuessCtx = (aas, aas) -- (ags, aas)
     let firstBestW = selectBestNextWord ctx
     -- let firstBestW = "queue" -- for full aas
     pure (firstBestW, ctx)
