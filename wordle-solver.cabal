@@ -45,8 +45,8 @@ build-type:         Simple
 -- extra-source-files:
 
 common warnings
-    -- ghc-options: -Weverything
-    ghc-options: -Weverything -rtsopts 
+    ghc-options: -Weverything
+    -- ghc-options: -Weverything -rtsopts 
 
 executable wordle-solver
     -- Import common warning flags.

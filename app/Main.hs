@@ -9,10 +9,11 @@ import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
 import Data.Word (Word8)
 
-import Control.Arrow ((***))
-import Control.Monad (guard)
-import Data.Foldable (foldl')
+import Control.Arrow ((&&&), (***))
+import Control.Monad (guard, replicateM)
+import Data.Foldable (foldl', maximumBy)
 import Data.Functor ((<&>))
+import Data.Ord (comparing)
 
 type WordleWord = BS.ByteString
 
@@ -68,52 +69,37 @@ filterCtx f (gs, as) = (f gs, f as) -- "hard" mode, but it prunes serach space
 filterByResult :: WordleWord -> [GuessResult] -> (WordleWord -> Bool)
 filterByResult guess res w = passesChars && passesCounts
   where
-    zippedGuess :: [(GuessResult, Word8)]
-    zippedGuess = {-# SCC "zippedGuess" #-} zip res (BS.unpack guess)
-
-    eqZip :: [Bool]
-    eqZip = {-# SCC "eqZip" #-} BS.zipWith (==) guess w
-
-    countChars :: Map.Map Word8 Int -> (GuessResult, Word8) -> Map.Map Word8 Int
-    countChars m (GRWrong, gc) = {-# SCC "countChars1" #-} Map.insertWith (+) gc 0 m
-    countChars m (_, gc) = {-# SCC "countChars2" #-} Map.insertWith (+) gc 1 m
-
     countedChars :: Map.Map Word8 Int
-    countedChars = {-# SCC "countedChars" #-} foldl' countChars Map.empty zippedGuess
+    countedChars =
+        {-# SCC "countedChars" #-}
+        Map.fromListWith (+) $
+            zipWith
+                (\c gr -> (c, if gr == GRWrong then 0 else 1))
+                (BS.unpack guess)
+                res
 
     passesCounts :: Bool
-    passesCounts = {-# SCC "passesCounts" #-} Map.foldlWithKey' filterWithMap True countedChars
-      where
-        filterWithMap :: Bool -> Word8 -> Int -> Bool
-        filterWithMap False _ _ = False
-        filterWithMap True c n
-            | n == 0 = c `BS.notElem` w
-            | otherwise = BS.count c w >= n
+    passesCounts =
+        {-# SCC "passesCounts" #-}
+        and $
+            Map.mapWithKey
+                (\c n -> if n == 0 then c `BS.notElem` w else BS.count c w >= n)
+                countedChars
 
     passesChars :: Bool
-    passesChars = {-# SCC "passesChars" #-} foldl' filterWithChars True zippedEq
-      where
-        zippedEq :: [(GuessResult, Bool)]
-        zippedEq = {-# SCC "zippedEq" #-} zip res eqZip
-
-        filterWithChars :: Bool -> (GuessResult, Bool) -> Bool
-        filterWithChars False _ = False
-        filterWithChars True (GRCorrect, isEq) = isEq
-        filterWithChars True (_, isEq) = not isEq
+    passesChars =
+        {-# SCC "passesChars" #-}
+        and $
+            zipWith
+                (\gr eq -> (gr == GRCorrect) == eq)
+                res
+                (BS.zipWith (==) guess w)
 
 -- https://wiki.haskell.org/99_questions/Solutions/26
 -- https://stackoverflow.com/questions/52602474/function-to-generate-the-unique-combinations-of-a-list-in-haskell
 -- == 3^5
 possibleResults :: [[GuessResult]]
-possibleResults = combinations 5 [GRCorrect, GROtherPlace, GRWrong]
-  where
-    combinations :: Int -> [a] -> [[a]]
-    combinations 0 _ = [[]] -- double list because it is base case for our do part
-    combinations _ [] = [] -- and this is for short-circuit behavior
-    combinations n as = do
-        el <- as
-        rest <- combinations (n - 1) as
-        pure $ el : rest
+possibleResults = replicateM 5 [GRCorrect, GROtherPlace, GRWrong]
 
 tryGuessAnswer :: Int -> WordleWord -> GuessCtx -> Maybe Int
 tryGuessAnswer _ ans (_, []) = error $ "Allowed answers are empty for expected answer " <> show ans
@@ -141,17 +127,11 @@ nextCtx answer guess = filterCtx $ filter $ filterByResult guess guessResult
     guessResult :: [GuessResult]
     guessResult = cmpWords guess answer
 
+maximumOn :: (Ord b) => (a -> b) -> [a] -> a
+maximumOn f as = snd $ maximumBy (comparing fst) $ fmap (f &&& id) as
+
 selectBestNextWord :: GuessCtx -> WordleWord
-selectBestNextWord (gs, as) = snd $ foldl' entIter (0, "") gs
-  where
-    entIter :: (Double, WordleWord) -> WordleWord -> (Double, WordleWord)
-    entIter prev@(maxEnt, _) curW =
-        let
-            wEnt = wordEntropy curW as
-         in
-            if wEnt > maxEnt
-                then (wEnt, curW)
-                else prev
+selectBestNextWord (gs, as) = maximumOn (flip wordEntropy as) gs
 
 wordEntropy :: WordleWord -> [WordleWord] -> Double
 wordEntropy w as = sum $ do
@@ -176,7 +156,7 @@ initProg = do
     -- ags <- getAllowedGuesses
     aas <- getAllowedAnswers
 
-    let ctx :: GuessCtx = (take 100 aas, take 100 aas) -- (ags, aas)
+    let ctx :: GuessCtx = (take 200 aas, take 200 aas) -- (ags, aas)
     let firstBestW = selectBestNextWord ctx
     -- let firstBestW = "queue" -- for full aas
     pure (firstBestW, ctx)
@@ -217,3 +197,6 @@ iterateWord w = do
             (_, []) -> error "No answer in the end"
             (_, [lastAns]) -> print lastAns
             _ -> nextIter answer ctx'
+
+-- Thanks to Daniel Wagner for help
+-- https://stackoverflow.com/a/79908180
