@@ -16,6 +16,7 @@ import Data.Functor ((<&>))
 import Data.Ord (comparing)
 
 type WordleWord = BS.ByteString
+type WIntMap = Map.Map Word8 Int
 
 getAllowedGuesses :: IO [WordleWord]
 getAllowedGuesses = BS.readFile allowedGuessesFN <&> BS.split (fromIntegral $ fromEnum '\n')
@@ -36,31 +37,22 @@ data GuessResult = GRWrong | GROtherPlace | GRCorrect
 
 -- Greens get priority
 cmpWords :: WordleWord -> WordleWord -> [GuessResult]
-cmpWords guess answer = reverse $ fst $ foldl' cmpChar ([], countedCors) zippedWords
+cmpWords guess answer = reverse $ fst $ foldl' fiter ([], mismatches) $ BS.zip guess answer
   where
-    zippedWords :: [(Word8, Word8)]
-    zippedWords = BS.zip guess answer
+    fiter :: ([GuessResult], WIntMap) -> (Word8, Word8) -> ([GuessResult], WIntMap)
+    fiter (grs, m) (gc, ac)
+        | gc == ac = (GRCorrect : grs, m)
+        | otherwise = case Map.findWithDefault 0 gc m of
+            0 -> (GRWrong : grs, m)
+            n -> (GROtherPlace : grs, Map.insert gc (n - 1) m)
 
-    countedCors :: Map.Map Word8 Int
-    countedCors = foldl' countCorrects Map.empty zippedWords
-
-    countCorrects :: Map.Map Word8 Int -> (Word8, Word8) -> Map.Map Word8 Int
-    countCorrects m (gc, ac)
-        | gc == ac = Map.insertWith (+) gc 1 m
-        | otherwise = m
-
-    cmpChar :: ([GuessResult], Map.Map Word8 Int) -> (Word8, Word8) -> ([GuessResult], Map.Map Word8 Int)
-    cmpChar (rs, m) (gc, ac) =
-        let
-            -- Corrects are used, plus new GROtherPlace
-            cUsed = Map.findWithDefault 0 gc m
-            cAns = BS.count gc answer
-            m' = Map.insert gc (cUsed + 1) m
-         in
-            if
-                | gc == ac -> (GRCorrect : rs, m)
-                | cAns > cUsed -> (GROtherPlace : rs, m')
-                | otherwise -> (GRWrong : rs, m)
+    mismatches :: WIntMap
+    mismatches =
+        Map.fromListWith (+) $
+            BS.zipWith
+                (\cg ca -> (ca, if cg == ca then 0 else 1))
+                guess
+                answer
 
 filterCtx :: ([WordleWord] -> [WordleWord]) -> GuessCtx -> GuessCtx
 filterCtx f (gs, as) = (f gs, f as) -- "hard" mode, but it prunes serach space
@@ -69,7 +61,7 @@ filterCtx f (gs, as) = (f gs, f as) -- "hard" mode, but it prunes serach space
 filterByResult :: WordleWord -> [GuessResult] -> (WordleWord -> Bool)
 filterByResult guess res w = passesChars && passesCounts
   where
-    countedChars :: Map.Map Word8 Int
+    countedChars :: WIntMap
     countedChars =
         {-# SCC "countedChars" #-}
         Map.fromListWith (+) $
