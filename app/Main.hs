@@ -162,8 +162,6 @@ selectBestNextWord (gs, as) = maximumOn (flip wordEntropy as) gs
 
 wordEntropy :: WordleWord -> [WordleWord] -> Double
 wordEntropy w as = sum $ do
-    -- sum - faster, but results are worse
-    -- avg is slower, but results are better
     (_, ngCount) <-
         IMap.toList $
             IMap.fromListWith (+) $
@@ -184,7 +182,6 @@ initProg = do
 
     let ctx :: GuessCtx = (aas, aas) -- (ags, aas)
     let firstBestW = selectBestNextWord ctx
-    -- let firstBestW = "queue" -- for full aas
     pure (firstBestW, ctx)
 
 main :: IO ()
