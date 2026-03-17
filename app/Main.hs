@@ -16,7 +16,7 @@ import Data.Word
 import Control.Arrow ((&&&), (***))
 import Control.Monad (replicateM, zipWithM_)
 import Control.Monad.ST (ST, runST)
-import Data.Foldable (foldl', foldlM, maximumBy, sequenceA_)
+import Data.Foldable (foldl', foldlM, maximumBy)
 import Data.Functor ((<&>))
 import Data.Ord (comparing)
 
@@ -31,7 +31,7 @@ unsafeEncodeBS :: BS.ByteString -> WordleWord
 unsafeEncodeBS = BS.foldl' go 0
   where
     go :: WordleWord -> Word8 -> WordleWord
-    go acc w = (flip unsafeShiftL 5 acc) .|. char2Index w
+    go acc w = (flip unsafeShiftL 5 acc) .|. fromIntegral (char2Raw w)
 
 -- Aligned by 5bit block size
 -- Transforms 0b00000 patterns to 0b00001
@@ -50,7 +50,10 @@ countZero5bitBlocksA :: WordleWord -> Int
 countZero5bitBlocksA = popCount . mark5bitZeros
 
 countChars :: Word8 -> WordleWord -> Int
-countChars c w = countEqs w $ replicate5bit 5 $ char2Index c
+countChars c w = countEqs w $ replicate5bit 5 $ char2Raw c
+
+countCharsRaw :: Word8 -> WordleWord -> Int
+countCharsRaw c w = countEqs w $ replicate5bit 5 c
 
 replicate5bit :: Int -> Word8 -> WordleWord
 replicate5bit 0 _ = 0
@@ -69,22 +72,60 @@ countEqs w1 w2 = countZero5bitBlocksA $ w1 `xor` w2
 listEqs :: WordleWord -> WordleWord -> [Bool]
 listEqs w1 w2 = word5bFoldl (\acc w -> (w == 0) : acc) [] (w1 `xor` w2)
 
+listNEqs :: WordleWord -> WordleWord -> [Bool]
+listNEqs w1 w2 = word5bFoldl (\acc w -> (w /= 0) : acc) [] (w1 `xor` w2)
+
 word5bFoldl' :: forall b. (b -> Word8 -> b) -> b -> WordleWord -> b
-word5bFoldl' f !acc = go 5 acc
+word5bFoldl' f !acc w = go 0 acc
   where
-    go :: Int -> b -> WordleWord -> b
-    go 0 !gacc _ = gacc
-    go n !gacc it = go (n - 1) (gacc `f` fromIntegral (it .&. 0b11111)) $ flip unsafeShiftR 5 it
+    go :: Int -> b -> b
+    go 4 !gacc = gacc `f` index5bit 4 w
+    go n !gacc = go (n + 1) (gacc `f` index5bit n w)
 
 word5bFoldl :: forall b. (b -> Word8 -> b) -> b -> WordleWord -> b
-word5bFoldl f = go 5
+word5bFoldl f acc w = go 0 acc
   where
-    go :: Int -> b -> WordleWord -> b
-    go 0 !gacc _ = gacc
-    go n !gacc it = go (n - 1) (gacc `f` fromIntegral (it .&. 0b11111)) $ flip unsafeShiftR 5 it
+    go :: Int -> b -> b
+    go 4 gacc = gacc `f` index5bit 4 w
+    go n gacc = go (n + 1) (gacc `f` index5bit n w)
+
+-- We are reading words backwards
+index5bit :: Int -> WordleWord -> Word8
+index5bit 0 w = fromIntegral w .&. 0b11111
+index5bit n w = index5bit 0 $ flip unsafeShiftR (n * 5) w
+
+index5bitC :: Int -> WordleWord -> Word8
+index5bitC n = raw2Char . index5bit n
+
+-- Raw - values are indexes, not chars
+-- R - reversed(keep in mind, our values in WordleWord are reversed already, so this will cancel it out)
+zipWith5bRawR :: forall a. (Word8 -> Word8 -> a) -> WordleWord -> WordleWord -> [a]
+zipWith5bRawR f w1 w2 = go 0 []
+  where
+    go :: Int -> [a] -> [a]
+    go 4 acc = (index5bit 4 w1 `f` index5bit 4 w2) : acc
+    go n acc = go (n + 1) $ (index5bit n w1 `f` index5bit n w2) : acc
+
+zipWith5bRaw :: forall a. (Word8 -> Word8 -> a) -> WordleWord -> WordleWord -> [a]
+zipWith5bRaw f w1 w2 = go 4 []
+  where
+    go :: Int -> [a] -> [a]
+    go 0 acc = (index5bit 0 w1 `f` index5bit 0 w2) : acc
+    go n acc = go (n - 1) $ (index5bit n w1 `f` index5bit n w2) : acc
+
+zip5bRawR :: WordleWord -> WordleWord -> [(Word8, Word8)]
+-- zip5bRawR = zipWith5bRawR (,)
+-- For some reason this version is faster
+zip5bRawR w1 w2 = zip (decodeIntRaw w1) (decodeIntRaw w2)
+
+zip5bRaw :: WordleWord -> WordleWord -> [(Word8, Word8)]
+zip5bRaw = zipWith5bRaw (,)
 
 decodeInt :: WordleWord -> [Word8]
-decodeInt = word5bFoldl (\acc c -> index2Char c : acc) []
+decodeInt = word5bFoldl (\acc c -> raw2Char c : acc) []
+
+decodeIntRaw :: WordleWord -> [Word8]
+decodeIntRaw = word5bFoldl (flip (:)) []
 
 onNewLine :: Word8 -> Bool
 onNewLine = (== (fromIntegral $ fromEnum '\n'))
@@ -118,39 +159,54 @@ unsafeGRs2Int = foldl' (\acc gr -> (flip unsafeShiftL 2 acc) .|. encodeGR gr) 0
 
 -- Greens get priority
 cmpWords :: WordleWord -> WordleWord -> [GuessResult]
-cmpWords guess answer = reverse $ runST $ do
-    vec <- mismatchesV
-    foldlM (fiter vec) [] $ zip (decodeInt guess) (decodeInt answer)
+cmpWords guess answer =
+    {-# SCC "cmpWords" #-}
+    runST $ do
+        vec <- mismatchesV
+        foldlM (fiter vec) [] $ zip5bRaw guess answer
   where
     fiter :: MV.MVector s Int -> [GuessResult] -> (Word8, Word8) -> ST s [GuessResult]
-    fiter vec grs (gc, ac) = do
-        if gc == ac
-            then pure $ GRCorrect : grs
-            else do
-                let ind :: Int = char2Index gc
-                val <- MV.unsafeRead vec ind
-                case val of
-                    0 -> pure $ GRWrong : grs
-                    n -> MV.unsafeWrite vec ind (n - 1) >> pure (GROtherPlace : grs)
+    fiter vec grs (gc, ac) =
+        {-# SCC "fiter" #-}
+        do
+            if gc == ac
+                then pure $ GRCorrect : grs
+                else do
+                    let ind :: Int = fromIntegral gc
+                    val <- MV.unsafeRead vec ind
+                    case val of
+                        0 -> pure $ GRWrong : grs
+                        n -> MV.unsafeWrite vec ind (n - 1) >> pure (GROtherPlace : grs)
 
     mismatchesV :: ST s (MV.MVector s Int)
-    mismatchesV = do
-        vec <- MV.replicate 26 0
-        zipWithM_ (\cg ca -> if cg == ca then pure () else MV.unsafeModify vec (+ 1) $ char2Index ca) (decodeInt guess) (decodeInt answer)
-        pure vec
+    mismatchesV =
+        {-# SCC "mismatchesV" #-}
+        do
+            vec <- MV.replicate 26 0
+            let nonEqs = listNEqs guess answer
+            let zipNEqs :: [(Int, Bool)] = zip (reverse [0 .. 4]) nonEqs
+            let nonEqIntIds :: [Int] = fst <$> filter snd zipNEqs
+            mapM_ (MV.unsafeModify vec (+ 1) . fromIntegral . flip index5bit answer) nonEqIntIds
+            pure vec
 
 filterCtx :: ([WordleWord] -> [WordleWord]) -> GuessCtx -> GuessCtx
 filterCtx f (gs, as) = (f gs, f as) -- "hard" mode, but it prunes serach space
 -- filterCtx f (gs, as) = (gs, f as) -- intended mode, but it's too slow
 
-char2Index :: (Integral i) => Word8 -> i
-char2Index c = fromIntegral c - fromIntegral (fromEnum 'a')
+char2Index :: Word8 -> Int
+char2Index c = fromIntegral c - fromEnum 'a'
 
-index2Char :: (Integral i) => i -> Word8
-index2Char i = fromIntegral $ fromEnum 'a' + fromIntegral i
+char2Raw :: Word8 -> Word8
+char2Raw c = c - fromIntegral (fromEnum 'a')
+
+index2Char :: Int -> Word8
+index2Char i = fromIntegral $ fromEnum 'a' + i
+
+raw2Char :: Word8 -> Word8
+raw2Char r = fromIntegral (fromEnum 'a') + r
 
 filterByResult :: WordleWord -> [GuessResult] -> (WordleWord -> Bool)
-filterByResult guess res w = passesCounts && passesChars
+filterByResult guess res w = {-# SCC "filterByResult" #-} passesCounts && passesChars
   where
     countedChars :: ST s (MV.MVector s Int)
     countedChars = do
@@ -158,10 +214,10 @@ filterByResult guess res w = passesCounts && passesChars
         zipWithM_
             ( \c gr ->
                 if gr == GRWrong
-                    then MV.unsafeModify vec (\val -> if val < 0 then 0 else val) $ char2Index c
-                    else MV.unsafeModify vec (\val -> if val < 0 then 1 else val + 1) $ char2Index c
+                    then MV.unsafeModify vec (\val -> if val < 0 then 0 else val) $ fromIntegral c
+                    else MV.unsafeModify vec (\val -> if val < 0 then 1 else val + 1) $ fromIntegral c
             )
-            (decodeInt guess)
+            (decodeIntRaw guess)
             res
         pure vec
 
@@ -173,8 +229,8 @@ filterByResult guess res w = passesCounts && passesChars
                 acc
                     && if
                         | v < 0 -> True
-                        | v == 0 -> (index2Char i) `countChars` w == 0
-                        | otherwise -> (index2Char i) `countChars` w >= v
+                        | v == 0 -> fromIntegral i `countCharsRaw` w == 0
+                        | otherwise -> fromIntegral i `countCharsRaw` w >= v
             )
             True
             vec
@@ -223,16 +279,18 @@ maximumOn :: (Ord b) => (a -> b) -> [a] -> a
 maximumOn f as = snd $ maximumBy (comparing fst) $ map (f &&& id) as
 
 selectBestNextWord :: GuessCtx -> WordleWord
-selectBestNextWord (gs, as) = maximumOn (flip wordEntropy as) gs
+selectBestNextWord (gs, as) = {-# SCC "selectBestNextWord" #-} maximumOn (flip wordEntropy as) gs
 
 wordEntropy :: WordleWord -> [WordleWord] -> Double
-wordEntropy w as = sum $ do
-    (_, ngCount) <-
-        IMap.toList $
-            IMap.fromListWith (+) $
-                [(unsafeGRs2Int $ cmpWords w a, 1) | a <- as]
-    let probability = ngCount / aCount
-    pure $ probability * (-log probability)
+wordEntropy w as =
+    {-# SCC "wordEntropy" #-}
+    sum $ do
+        (_, ngCount) <-
+            IMap.toList $
+                IMap.fromListWith (+) $
+                    [(unsafeGRs2Int $ cmpWords w a, 1) | a <- as]
+        let probability = ngCount / aCount
+        pure $ probability * (-log probability)
   where
     aCount :: Double
     aCount = fromIntegral $ length as

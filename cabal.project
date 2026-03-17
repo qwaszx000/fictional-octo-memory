@@ -1,3 +1,4 @@
 -- profiling: True
 -- profiling-detail: late
+-- or none
 packages: ./wordle-solver.cabal
