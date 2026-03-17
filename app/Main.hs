@@ -21,6 +21,7 @@ import Data.Functor ((<&>))
 import Data.Ord (comparing)
 
 import Data.Bits
+import Data.STRef
 
 type WordleWord = Word32
 
@@ -162,32 +163,21 @@ cmpWords :: WordleWord -> WordleWord -> [GuessResult]
 cmpWords guess answer =
     {-# SCC "cmpWords" #-}
     runST $ do
-        vec <- mismatchesV
-        foldlM (fiter vec) [] $ zip5bRaw guess answer
+        vec <- MV.replicate 26 0
+        let nonEqs = listNEqs guess answer
+        let zipNEqs :: [(Int, Bool)] = zip (reverse [0 .. 4]) nonEqs
+        let nonEqIntIds :: [Int] = fst <$> filter snd zipNEqs
+        mapM_ (MV.unsafeModify vec (+ 1) . fromIntegral . flip index5bit answer) nonEqIntIds
+        mapM (miter vec) zipNEqs
   where
-    fiter :: MV.MVector s Int -> [GuessResult] -> (Word8, Word8) -> ST s [GuessResult]
-    fiter vec grs (gc, ac) =
-        {-# SCC "fiter" #-}
-        do
-            if gc == ac
-                then pure $ GRCorrect : grs
-                else do
-                    let ind :: Int = fromIntegral gc
-                    val <- MV.unsafeRead vec ind
-                    case val of
-                        0 -> pure $ GRWrong : grs
-                        n -> MV.unsafeWrite vec ind (n - 1) >> pure (GROtherPlace : grs)
-
-    mismatchesV :: ST s (MV.MVector s Int)
-    mismatchesV =
-        {-# SCC "mismatchesV" #-}
-        do
-            vec <- MV.replicate 26 0
-            let nonEqs = listNEqs guess answer
-            let zipNEqs :: [(Int, Bool)] = zip (reverse [0 .. 4]) nonEqs
-            let nonEqIntIds :: [Int] = fst <$> filter snd zipNEqs
-            mapM_ (MV.unsafeModify vec (+ 1) . fromIntegral . flip index5bit answer) nonEqIntIds
-            pure vec
+    miter :: MV.MVector s Int -> (Int, Bool) -> ST s GuessResult
+    miter _ (_, False) = pure GRCorrect
+    miter vec (cid, True) = do
+        let ind :: Int = fromIntegral $ index5bit cid guess
+        val <- MV.unsafeRead vec ind
+        case val of
+            0 -> pure GRWrong
+            n -> MV.unsafeWrite vec ind (n - 1) >> pure GROtherPlace
 
 filterCtx :: ([WordleWord] -> [WordleWord]) -> GuessCtx -> GuessCtx
 filterCtx f (gs, as) = (f gs, f as) -- "hard" mode, but it prunes serach space
